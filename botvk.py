@@ -2,6 +2,7 @@ import vk_api
 from vk_api.longpoll import VkLongPoll, VkEventType
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
 import sqlite3
+import random
 from datetime import datetime
 import os
 from dotenv import load_dotenv
@@ -214,12 +215,12 @@ def send_to_manager(vk, order_data):
     msg += "Для обработки зайдите в админ-панель."
     
     try:
-        vk.method('messages.send', {
-            'user_id': VK_MANAGER_ID,
-            'message': msg,
-            'random_id': 0,
-            'keyboard': get_manager_keyboard()
-        })
+        vk.messages.send(
+            user_id=VK_MANAGER_ID,
+            message=msg,
+            random_id=random.randint(1, 2**31),
+            keyboard=get_manager_keyboard()
+        )
         if DEBUG:
             print(f"✅ Заявка отправлена менеджеру {VK_MANAGER_ID}")
     except Exception as e:
@@ -261,12 +262,14 @@ def get_order_keyboard(wood_type):
 
 # ============ ОСНОВНЫЕ ФУНКЦИИ ============
 def send_message(vk, user_id, message, keyboard=None):
-    vk.method('messages.send', {
+    params = {
         'user_id': user_id,
         'message': message,
-        'random_id': 0,
-        'keyboard': keyboard
-    })
+        'random_id': random.randint(1, 2**31)
+    }
+    if keyboard is not None:
+        params['keyboard'] = keyboard
+    vk.messages.send(**params)
 
 def handle_catalog(vk, user_id, wood_type=None):
     if wood_type:
@@ -486,7 +489,7 @@ def main():
             
             # ===== ПОЛУЧАЕМ ДАННЫЕ ПОЛЬЗОВАТЕЛЯ =====
             try:
-                user_info = vk.method('users.get', {'user_ids': user_id})[0]
+                user_info = vk.users.get(user_ids=user_id)[0]
                 user_name = f"{user_info['first_name']} {user_info['last_name']}"
                 save_user(user_id, user_info['first_name'], user_info['last_name'])
             except:
