@@ -390,7 +390,7 @@ def handle_ai_query(vk, user_id, query):
     if "заказ" in response.lower() or "оформить" in response.lower():
         response += "\n\n💡 Для оформления заказа используйте кнопку 'Каталог' в меню."
     
-    send_message(vk, user_id, response, get_main_keyboard())
+    send_message(vk, user_id, response, get_catalog_keyboard())
 
 # ============ АДМИН-ФУНКЦИИ ============
 def handle_manager_commands(vk, user_id, message):
@@ -498,15 +498,34 @@ def main():
             # ===== ОБРАБОТКА СОСТОЯНИЙ =====
             if user_id in user_state:
                 state = user_state[user_id]
-                
-                if state['state'] == 'waiting_quantity':
-                    handle_order(vk, user_id, user_name, state['wood'], message, state.get('comment', ''))
-                    del user_state[user_id]
+
+                # --- Режим AI: отвечаем на вопросы подряд ---
+                if state['state'] == 'waiting_ai':
+                    # Выход из режима AI по кнопкам меню
+                    if message_lower in ["🔙 назад", "назад", "привет", "старт", "начать", "start"]:
+                        del user_state[user_id]
+                        send_message(vk, user_id, "🔙 Главное меню:", get_main_keyboard())
+                        continue
+                    # Иначе — обрабатываем как вопрос к AI и остаёмся в режиме
+                    handle_ai_query(vk, user_id, message)
                     continue
-                
+
+                # --- Шаг 1: ждём количество ---
+                elif state['state'] == 'waiting_quantity':
+                    # сохраняем количество, переходим к комментарию
+                    user_state[user_id] = {
+                        'state': 'waiting_comment',
+                        'wood': state['wood'],
+                        'quantity': message
+                    }
+                    send_message(vk, user_id, "📝 Добавьте комментарий к заказу (или напишите 'нет'):")
+                    continue
+
+                # --- Шаг 2: ждём комментарий, оформляем заказ ---
                 elif state['state'] == 'waiting_comment':
-                    user_state[user_id] = {'state': 'waiting_quantity', 'wood': state['wood'], 'comment': message if message.lower() != 'нет' else ''}
-                    send_message(vk, user_id, "Теперь введите количество в куб.м:")
+                    comment = message if message.lower() != 'нет' else ''
+                    handle_order(vk, user_id, user_name, state['wood'], state['quantity'], comment)
+                    del user_state[user_id]
                     continue
             
             # ===== ГЛАВНОЕ МЕНЮ =====
@@ -526,33 +545,30 @@ def main():
                 handle_catalog(vk, user_id)
             
             elif message_lower == "🌲 сосна":
-                user_state[user_id] = {'state': 'waiting_quantity', 'wood': 'сосна'}
                 handle_catalog(vk, user_id, 'сосна')
-            
+
             elif message_lower == "🌳 дуб":
-                user_state[user_id] = {'state': 'waiting_quantity', 'wood': 'дуб'}
                 handle_catalog(vk, user_id, 'дуб')
-            
+
             elif message_lower == "🌿 береза":
-                user_state[user_id] = {'state': 'waiting_quantity', 'wood': 'береза'}
                 handle_catalog(vk, user_id, 'береза')
-            
+
             elif message.startswith("✅ заказать"):
                 wood_type = message.replace("✅ заказать", "").strip()
                 if wood_type in ['сосна', 'дуб', 'береза']:
-                    user_state[user_id] = {'state': 'waiting_comment', 'wood': wood_type}
-                    send_message(vk, user_id, "Добавьте комментарий к заказу (или напишите 'нет'):")
+                    user_state[user_id] = {'state': 'waiting_quantity', 'wood': wood_type}
+                    send_message(vk, user_id, "📦 Введите количество в куб.м (например: 5):")
             
             elif message_lower == "🛒 корзина" or message_lower == "корзина":
                 handle_cart(vk, user_id)
             
             elif message_lower == "🤖 спросить ai" or message_lower == "ai" or message_lower == "🤖 ai":
-                send_message(vk, user_id, "🤖 Задайте ваш вопрос AI-ассистенту (Gemini 2.5 Flash):")
                 user_state[user_id] = {'state': 'waiting_ai'}
-            
-            elif user_id in user_state and user_state[user_id].get('state') == 'waiting_ai':
-                handle_ai_query(vk, user_id, message)
-                del user_state[user_id]
+                send_message(vk, user_id,
+                            "🤖 Задайте ваш вопрос AI-ассистенту.\n"
+                            "Можете спрашивать подряд — я отвечу на каждый.\n"
+                            "Чтобы выйти, нажмите «🔙 Назад».",
+                            get_catalog_keyboard())
             
             elif message_lower == "📞 контакты" or message_lower == "контакты":
                 send_message(vk, user_id,
