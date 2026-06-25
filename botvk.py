@@ -160,7 +160,20 @@ def save_user(user_id, first_name, last_name):
     conn.commit()
     conn.close()
 
-# ============ AI АССИСТЕНТ (GEMINI 2.5 FLASH) ============
+def set_order_status(order_id, new_status):
+    """Меняет статус заказа по номеру. Возвращает True, если заказ найден."""
+    conn = sqlite3.connect('wood_bot.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT id FROM orders WHERE id = ?', (order_id,))
+    if not cursor.fetchone():
+        conn.close()
+        return False
+    cursor.execute('UPDATE orders SET status = ? WHERE id = ?', (new_status, order_id))
+    conn.commit()
+    conn.close()
+    return True
+
+# ============ AI АССИСТЕНТ ============
 def get_ai_response(user_message, user_context=""):
     """Запрос к AI через AITunnel (openai-формат)"""
     try:
@@ -393,39 +406,61 @@ def handle_ai_query(vk, user_id, query):
     send_message(vk, user_id, response, get_catalog_keyboard())
 
 # ============ АДМИН-ФУНКЦИИ ============
-def handle_manager_commands(vk, user_id, message):
+def handle_manager_commands(vk, user_id, message, user_state):
     """Обработка команд от менеджера"""
     if user_id != VK_MANAGER_ID:
         return False
-    
-    if message == "📊 статистика":
+
+    message_lower = message.lower()
+
+    # --- Если ждём номер заказа (для подтверждения/отмены) ---
+    mgr_key = f"mgr_{user_id}"
+    if mgr_key in user_state:
+        action = user_state[mgr_key]['action']
+        del user_state[mgr_key]
+        try:
+            order_id = int(message.strip())
+        except ValueError:
+            send_message(vk, user_id, "❌ Нужно ввести номер заказа (число).", get_manager_keyboard())
+            return True
+
+        if action == 'confirm':
+            ok = set_order_status(order_id, 'подтверждён')
+            txt = f"✅ Заказ #{order_id} подтверждён!" if ok else f"❌ Заказ #{order_id} не найден."
+        else:  # cancel
+            ok = set_order_status(order_id, 'отменён')
+            txt = f"❌ Заказ #{order_id} отменён." if ok else f"❌ Заказ #{order_id} не найден."
+        send_message(vk, user_id, txt, get_manager_keyboard())
+        return True
+
+    if message_lower == "📊 статистика":
         conn = sqlite3.connect('wood_bot.db')
         cursor = conn.cursor()
-        
+
         cursor.execute('SELECT COUNT(*) FROM orders')
         total_orders = cursor.fetchone()[0]
-        
+
         cursor.execute('SELECT SUM(total_price) FROM orders WHERE status = "новый"')
         total_sum = cursor.fetchone()[0] or 0
-        
+
         cursor.execute('SELECT COUNT(*) FROM orders WHERE status = "новый"')
         active_orders = cursor.fetchone()[0]
-        
+
         cursor.execute('SELECT COUNT(*) FROM users')
         total_users = cursor.fetchone()[0]
-        
+
         conn.close()
-        
-        msg = f"📊 *Статистика компании*\n\n"
+
+        msg = f"📊 Статистика компании\n\n"
         msg += f"👥 Всего клиентов: {total_users}\n"
         msg += f"📋 Всего заказов: {total_orders}\n"
         msg += f"🔄 Активных: {active_orders}\n"
         msg += f"💰 Сумма активных: {total_sum} руб"
-        
+
         send_message(vk, user_id, msg, get_manager_keyboard())
         return True
-    
-    elif message == "📋 все заказы":
+
+    elif message_lower == "📋 все заказы":
         conn = sqlite3.connect('wood_bot.db')
         cursor = conn.cursor()
         cursor.execute('''
@@ -437,25 +472,31 @@ def handle_manager_commands(vk, user_id, message):
         ''')
         orders = cursor.fetchall()
         conn.close()
-        
+
         if not orders:
             send_message(vk, user_id, "📋 Новых заказов нет", get_manager_keyboard())
             return True
-        
-        msg = "📋 *Новые заказы:*\n\n"
+
+        msg = "📋 Новые заказы:\n\n"
         for order in orders:
             order_id, name, wood, quantity, total, status, created = order
             msg += f"#{order_id} | {name}\n"
             msg += f"🌲 {wood.capitalize()} {quantity} куб.м = {total} руб\n"
             msg += f"🕐 {created[:16]}\n\n"
-        
+
         send_message(vk, user_id, msg, get_manager_keyboard())
         return True
-    
-    elif message.startswith("✅ подтвердить заказ"):
+
+    elif message_lower.startswith("✅ подтвердить заказ"):
+        user_state[mgr_key] = {'action': 'confirm'}
         send_message(vk, user_id, "Введите номер заказа для подтверждения:", get_manager_keyboard())
         return True
-    
+
+    elif message_lower.startswith("❌ отменить заказ"):
+        user_state[mgr_key] = {'action': 'cancel'}
+        send_message(vk, user_id, "Введите номер заказа для отмены:", get_manager_keyboard())
+        return True
+
     return False
 
 # ============ ГЛАВНАЯ ФУНКЦИЯ ============
@@ -467,6 +508,7 @@ def main():
     longpoll = VkLongPoll(vk_session)
     
     print("🌲 Бот 'Древесина-Про' запущен!")
+    print("🔖 ВЕРСИЯ КОДА: v3-FIXED-BUTTONS")  # маркер: если этой строки нет в логах — работает старый код
     print(f"🤖 AI: Google Gemini 2.5 Flash")
     print(f"👤 Менеджер ID: {VK_MANAGER_ID if VK_MANAGER_ID else 'НЕ ЗАДАН!'}")
     print(f"📊 Режим DEBUG: {DEBUG}")
@@ -484,7 +526,7 @@ def main():
                 print(f"📩 Сообщение от {user_id}: {message}")
             
             # ===== ОБРАБОТКА МЕНЕДЖЕРА =====
-            if handle_manager_commands(vk, user_id, message):
+            if handle_manager_commands(vk, user_id, message, user_state):
                 continue
             
             # ===== ПОЛУЧАЕМ ДАННЫЕ ПОЛЬЗОВАТЕЛЯ =====
@@ -544,20 +586,22 @@ def main():
             elif message_lower == "📦 каталог" or message_lower == "каталог":
                 handle_catalog(vk, user_id)
             
-            elif message_lower == "🌲 сосна":
-                handle_catalog(vk, user_id, 'сосна')
+            # Распознаём породу в сообщении (для кнопок и текста)
+            elif any(w in message_lower for w in ['сосна', 'дуб', 'береза']):
+                # Определяем, какая порода упомянута
+                wood_type = None
+                for w in ['сосна', 'дуб', 'береза']:
+                    if w in message_lower:
+                        wood_type = w
+                        break
 
-            elif message_lower == "🌳 дуб":
-                handle_catalog(vk, user_id, 'дуб')
-
-            elif message_lower == "🌿 береза":
-                handle_catalog(vk, user_id, 'береза')
-
-            elif message.startswith("✅ заказать"):
-                wood_type = message.replace("✅ заказать", "").strip()
-                if wood_type in ['сосна', 'дуб', 'береза']:
+                # Если есть слово "заказать" — запускаем оформление
+                if 'заказать' in message_lower:
                     user_state[user_id] = {'state': 'waiting_quantity', 'wood': wood_type}
-                    send_message(vk, user_id, "📦 Введите количество в куб.м (например: 5):")
+                    send_message(vk, user_id, f"📦 Заказ: {wood_type}. Введите количество в куб.м (например: 5):")
+                else:
+                    # Иначе показываем карточку породы
+                    handle_catalog(vk, user_id, wood_type)
             
             elif message_lower == "🛒 корзина" or message_lower == "корзина":
                 handle_cart(vk, user_id)
@@ -573,11 +617,12 @@ def main():
             elif message_lower == "📞 контакты" or message_lower == "контакты":
                 send_message(vk, user_id,
                             "📞 *Наши контакты:*\n\n"
-                            "☎️ Телефон: +7 (999) 123-45-67\n"
-                            "📧 Email: wood@company.ru\n"
-                            "📍 Адрес: г. Москва, ул. Лесная, 15\n\n"
+                            "☎️ Телефон: +7 (000) 000-00-00\n"
+                            "📧 Email: test@bot.vk\n"
+                            "📍 Адрес: г. Москва, ул. Лесная, 00\n\n"
                             "🕐 Режим работы: Пн-Пт 9:00-18:00\n"
-                            "💬 Ответим в течение 15 минут",
+                            "💬 Ответим в течение 15 минут
+                            ТЕСТ БОТ",
                             get_main_keyboard())
             
             elif message_lower == "🔙 назад":
